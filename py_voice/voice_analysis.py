@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sounddevice as sd
 import matplotlib
+
+from py_pipe.pipe import Pipe
+
 matplotlib.use('TkAgg')
 import pyloudnorm as pyln
 turnstile_id = "demo_turnstile_0001"
@@ -35,9 +38,9 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-
+sound_level_list = list()
 # state managment variables
-
+sound_queue_length = 300
 can_sst_start = True
 can_validate = False
 speech_key, service_region = "1e9f1691dcbd43758eadb5f7c2ddbd3f", "centralindia"
@@ -50,10 +53,10 @@ interval=30
 q = queue.Queue()
 val = []
 i = 0
-volume_threshold= 1
+volume_threshold= 0
 lines,plotdata=None,None
-
-
+noise_pipe = Pipe()
+sound_level = 0
 
 
 def audio_callback(indata, frames, time, status):
@@ -67,6 +70,8 @@ def audio_callback(indata, frames, time, status):
 
 def record(sec):
     """Start audio recording for n second"""
+    global sound_level_list
+    global sound_level
     while True:
         if q.empty():
             continue
@@ -78,8 +83,20 @@ def record(sec):
         data, rate = sf.read("default.wav")  # load audio (with shape (samples, channels))
         meter = pyln.Meter(rate)  # create BS.1770 meter
         loudness = meter.integrated_loudness(data)  # measure loudness
-        print(loudness)
+        # loudness=-np.inf
+        if np.isfinite(loudness):
+            sound_level_list.append(loudness)
+        else:
+            sound_level_list.append(np.float64(-50.0))
+        if(len(sound_level_list) > sound_queue_length):
+            sound_level_list = sound_level_list[-sound_queue_length:]
+        sound_level = sum(sound_level_list) / len(sound_level_list)
+        noise_pipe.push(sound_level)
+        print("\t\tSoundLevel: {}  LUFS".format(sound_level))
+        print()
+        print()
 
+        # print(len(sound_level_list))
 
 def update_plot(frame):
     """Callback for matplotlib on each plot update.
@@ -96,12 +113,13 @@ def update_plot(frame):
         plotdata[-shift:, :] = data
     for column, line in enumerate(lines):
         line.set_ydata(plotdata[:, column])
-
     return lines
+# ax.text(600, 1.1, "SoundLevel: {}".format(int(sound_level)))
+
 
 def sound_loop():
     """ This loops till the program is shut down. All callbacks orginate from this function """
-    global plotdata,lines
+    global plotdata,lines, sound_level
     try:
         length = int(window * samplerate / (1000 * downsample))
         plotdata = np.zeros((length, 1))
@@ -112,23 +130,24 @@ def sound_loop():
         ax.yaxis.grid(True)
         ax.tick_params(bottom='off', top='off', labelbottom='off',
                     right='off', left='off', labelleft='off')
-        fig.tight_layout(pad=0)
-
+        # fig.tight_layout(pad=0)
         stream = sd.InputStream( device=args.device, channels=1,
             samplerate= samplerate, callback=audio_callback)
+
         if (args.plot==0):
             with stream:
                 while True:
                     time.sleep(0.1)
         elif(args.plot==1):
             ani = FuncAnimation(fig, update_plot, interval=interval, blit=True)
+
             with stream:
                 plt.show()
 
     except Exception as e:
         print("ERROR:", e)
 
-Thread(target=record, args=(2,)).start()
+Thread(target=record, args=(1,)).start()
 sound_loop()
 
 
